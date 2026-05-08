@@ -258,10 +258,13 @@ main { padding: 24px 0 64px; min-height: calc(100vh - 60px - 60px); }
   margin-bottom: 8px;
 }
 .q-card .q-image {
+  display: block;
   width: 100%;
+  max-width: 700px;
+  height: auto;
+  margin: 0 auto;
   border-radius: 10px;
   background: #eef1f7;
-  display: block;
   border: 1px solid var(--border);
 }
 
