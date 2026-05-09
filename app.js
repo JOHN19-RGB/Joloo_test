@@ -5,7 +5,6 @@
   const app = document.getElementById("app");
   const navLinks = document.querySelectorAll(".nav a");
 
-  // questions grouped by card
   const BY_CARD = {};
   QUESTIONS.forEach((q) => {
     if (!BY_CARD[q.card]) BY_CARD[q.card] = [];
@@ -16,16 +15,83 @@
     .map(Number)
     .sort((a, b) => a - b);
 
+  // ---- Persistence (localStorage) ----
+  const STORAGE_KEY = "joloonii.progress.v1";
+  function loadProgress() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return { cards: {} };
+      const obj = JSON.parse(raw);
+      if (!obj || typeof obj !== "object") return { cards: {} };
+      if (!obj.cards) obj.cards = {};
+      return obj;
+    } catch (_) {
+      return { cards: {} };
+    }
+  }
+  function saveCardResult(cardNum, correct, total) {
+    const p = loadProgress();
+    const prev = p.cards[cardNum] || { best: 0, attempts: 0 };
+    p.cards[cardNum] = {
+      best: Math.max(prev.best || 0, correct),
+      total,
+      attempts: (prev.attempts || 0) + 1,
+      lastAt: Date.now(),
+    };
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
+    } catch (_) { /* quota or disabled */ }
+  }
+
+  // ---- Keyboard shortcut registry ----
+  // Pages register a handler; old handler is replaced on each render.
+  let keyHandler = null;
+  function setKeyHandler(fn) { keyHandler = fn; }
+  document.addEventListener("keydown", (e) => {
+    if (!keyHandler) return;
+    // Don't intercept when typing in form fields (none today, but defensive).
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    keyHandler(e);
+  });
+
+  // ---- Image lightbox ----
+  let lightboxEl = null;
+  function openLightbox(src, alt) {
+    closeLightbox();
+    lightboxEl = document.createElement("div");
+    lightboxEl.className = "lightbox";
+    lightboxEl.setAttribute("role", "dialog");
+    lightboxEl.setAttribute("aria-label", "Зураг томруулсан");
+    lightboxEl.innerHTML = `
+      <button class="lightbox-close" aria-label="Хаах">×</button>
+      <img src="${src}" alt="${alt || ""}" />
+    `;
+    lightboxEl.addEventListener("click", (e) => {
+      if (e.target === lightboxEl || e.target.classList.contains("lightbox-close")) closeLightbox();
+    });
+    document.body.appendChild(lightboxEl);
+    document.body.classList.add("no-scroll");
+  }
+  function closeLightbox() {
+    if (lightboxEl) {
+      lightboxEl.remove();
+      lightboxEl = null;
+      document.body.classList.remove("no-scroll");
+    }
+  }
+  // ESC closes lightbox globally
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && lightboxEl) closeLightbox();
+  });
+
   function setActiveNav(hash) {
     navLinks.forEach((a) => {
       const href = a.getAttribute("href").replace("#", "");
-      const matchHome = href === "/" && (hash === "" || hash === "/" || hash.startsWith("/chapter/"));
-      const matchSection =
-        href !== "/" && hash.startsWith(href);
-      a.classList.toggle(
-        "active",
-        matchHome || matchSection
-      );
+      const matchHome =
+        href === "/" && (hash === "" || hash === "/" || hash.startsWith("/chapter/"));
+      const matchSection = href !== "/" && hash.startsWith(href);
+      a.classList.toggle("active", matchHome || matchSection);
     });
   }
 
@@ -34,11 +100,12 @@
     const hash = location.hash.replace(/^#/, "") || "/";
     setActiveNav(hash);
     window.scrollTo(0, 0);
+    setKeyHandler(null); // reset per-page handler
 
     if (hash === "/" || hash === "") return renderHome();
     if (hash === "/chapters") return renderChapters();
 
-    let m = hash.match(/^\/chapter\/(\d+)$/);
+    const m = hash.match(/^\/chapter\/(\d+)$/);
     if (m) return renderChapter(parseInt(m[1], 10));
 
     if (hash === "/random") return renderRandomStart();
@@ -75,13 +142,23 @@
 
   // ---- CHAPTERS LIST ----
   function renderChapters() {
-    const tiles = CARD_NUMS.map(
-      (n) => `
-      <a class="chapter-tile" href="#/chapter/${n}">
+    const progress = loadProgress();
+    const tiles = CARD_NUMS.map((n) => {
+      const p = progress.cards[n];
+      let badge = "";
+      let cls = "chapter-tile";
+      if (p && typeof p.best === "number") {
+        const passed = p.best >= 18;
+        cls += passed ? " done" : " tried";
+        badge = `<span class="best ${passed ? "pass" : "fail"}">${p.best}/20</span>`;
+      }
+      return `
+      <a class="${cls}" href="#/chapter/${n}" aria-label="Карт ${pad2(n)}">
         <span class="num">${pad2(n)}</span>
         <span class="label">${BY_CARD[n].length} асуулт</span>
-      </a>`
-    ).join("");
+        ${badge}
+      </a>`;
+    }).join("");
 
     app.innerHTML = `
       <div class="section-title">
@@ -101,11 +178,71 @@
     let correctCount = 0;
     let wrongCount = 0;
     let answered = false;
+    let saved = false;
+
+    function pickAnswer(picked) {
+      if (answered) return;
+      const q = list[idx];
+      answered = true;
+      const correct = picked === q.answer;
+
+      const choicesEl = document.getElementById("choices");
+      const feedbackEl = document.getElementById("feedback");
+      const nextBtn = document.getElementById("nextBtn");
+
+      choicesEl.querySelectorAll(".choice-btn").forEach((b) => {
+        b.disabled = true;
+        const a = parseInt(b.dataset.ans, 10);
+        if (a === q.answer) b.classList.add("correct");
+        else if (a === picked) b.classList.add("wrong");
+      });
+
+      feedbackEl.classList.add("show");
+      if (correct) {
+        correctCount++;
+        feedbackEl.classList.add("right");
+        feedbackEl.innerHTML = `
+          <div class="fb-icon">✓</div>
+          <div class="fb-body">
+            <p class="fb-title">Зөв байна!</p>
+            <p class="fb-sub">Зөв хариулт: <strong>#${q.answer}</strong></p>
+          </div>
+        `;
+      } else {
+        wrongCount++;
+        feedbackEl.classList.add("wrong");
+        feedbackEl.innerHTML = `
+          <div class="fb-icon">✗</div>
+          <div class="fb-body">
+            <p class="fb-title">Буруу хариулт</p>
+            <p class="fb-sub">Таны сонголт: <strong>#${picked}</strong> · Зөв хариулт: <strong>#${q.answer}</strong></p>
+          </div>
+        `;
+      }
+
+      nextBtn.disabled = false;
+      nextBtn.focus();
+    }
+
+    function advance() {
+      const total = list.length;
+      if (idx === total - 1) {
+        if (!saved) {
+          saveCardResult(cardNum, correctCount, total);
+          saved = true;
+        }
+        renderChapterDone(cardNum, correctCount, wrongCount, total);
+        return;
+      }
+      idx++;
+      answered = false;
+      draw();
+    }
 
     function draw() {
       const q = list[idx];
       const total = list.length;
-      const pct = ((idx) / total) * 100;
+      const pct = (idx / total) * 100;
 
       app.innerHTML = `
         <div class="quiz-header">
@@ -120,93 +257,67 @@
           </div>
         </div>
 
-        <div class="progress"><div class="progress-bar" style="width:${pct}%"></div></div>
+        <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pct)}">
+          <div class="progress-bar" style="width:${pct}%"></div>
+        </div>
 
         <div class="q-card">
           <div class="q-meta">Асуулт ${q.q}</div>
-          <img class="q-image" src="${q.img}" alt="Асуулт ${q.q}" loading="eager" />
-          <div class="choices" id="choices">
+          <img class="q-image zoomable" src="${q.img}" alt="Асуулт ${q.q}" loading="eager" />
+          <div class="choices" id="choices" role="radiogroup" aria-label="Хариултын сонголт">
             ${[1, 2, 3, 4, 5]
               .map(
-                (n) => `<button class="choice-btn" data-ans="${n}">${n}</button>`
+                (n) =>
+                  `<button class="choice-btn" data-ans="${n}" aria-label="Хариулт ${n}"><span class="kbd">${n}</span> ${n}</button>`
               )
               .join("")}
           </div>
-          <div class="feedback" id="feedback"></div>
+          <div class="feedback" id="feedback" role="status" aria-live="polite"></div>
         </div>
 
         <div class="actions">
           <a class="btn" href="#/chapters">← Картууд</a>
           <button class="btn primary" id="nextBtn" disabled>${
             idx === total - 1 ? "Дуусгах" : "Дараагийн"
-          }</button>
+          } <span class="kbd kbd-light">Enter</span></button>
         </div>
+
+        <p class="kbd-hint">Хариултаа сонгохдоо <span class="kbd">1</span>–<span class="kbd">5</span>, дараагийн руу шилжихдээ <span class="kbd">Enter</span>.</p>
       `;
 
       const choicesEl = document.getElementById("choices");
-      const feedbackEl = document.getElementById("feedback");
       const nextBtn = document.getElementById("nextBtn");
 
       choicesEl.querySelectorAll(".choice-btn").forEach((btn) => {
         btn.addEventListener("click", () => {
-          if (answered) return;
-          answered = true;
-          const picked = parseInt(btn.dataset.ans, 10);
-          const correct = picked === q.answer;
-
-          choicesEl.querySelectorAll(".choice-btn").forEach((b) => {
-            b.disabled = true;
-            const a = parseInt(b.dataset.ans, 10);
-            if (a === q.answer) b.classList.add("correct");
-            else if (a === picked) b.classList.add("wrong");
-          });
-
-          feedbackEl.classList.add("show");
-          if (correct) {
-            correctCount++;
-            feedbackEl.classList.add("right");
-            feedbackEl.innerHTML = `
-              <div class="fb-icon">✓</div>
-              <div class="fb-body">
-                <p class="fb-title">Зөв байна!</p>
-                <p class="fb-sub">Зөв хариулт: <strong>#${q.answer}</strong></p>
-              </div>
-            `;
-          } else {
-            wrongCount++;
-            feedbackEl.classList.add("wrong");
-            feedbackEl.innerHTML = `
-              <div class="fb-icon">✗</div>
-              <div class="fb-body">
-                <p class="fb-title">Буруу хариулт</p>
-                <p class="fb-sub">Таны сонголт: <strong>#${picked}</strong> · Зөв хариулт: <strong>#${q.answer}</strong></p>
-              </div>
-            `;
-          }
-
-          nextBtn.disabled = false;
-          nextBtn.focus();
+          pickAnswer(parseInt(btn.dataset.ans, 10));
         });
       });
 
-      nextBtn.addEventListener("click", () => {
-        if (idx === total - 1) {
-          // Show finish summary inline
-          renderChapterDone(cardNum, correctCount, wrongCount, total);
-          return;
-        }
-        idx++;
-        answered = false;
-        draw();
-      });
+      const imgEl = app.querySelector(".q-image.zoomable");
+      if (imgEl) {
+        imgEl.addEventListener("click", () => openLightbox(q.img, "Асуулт " + q.q));
+      }
+
+      nextBtn.addEventListener("click", advance);
     }
+
+    setKeyHandler((e) => {
+      if (e.key >= "1" && e.key <= "5") {
+        e.preventDefault();
+        pickAnswer(parseInt(e.key, 10));
+      } else if ((e.key === "Enter" || e.key === " ") && answered) {
+        e.preventDefault();
+        advance();
+      }
+    });
 
     draw();
   }
 
   function renderChapterDone(cardNum, correct, wrong, total) {
     const pct = Math.round((correct / total) * 100);
-    const passed = correct >= 18; // 18/20 ≈ official passing
+    const passed = correct >= 18;
     app.innerHTML = `
       <div class="result-card">
         <div class="muted">Карт #${pad2(cardNum)} дууслаа</div>
@@ -231,7 +342,6 @@
   }
 
   // ---- RANDOM (mode 2) ----
-  // session state in memory
   let randomSession = null;
 
   function renderRandomStart() {
@@ -251,7 +361,6 @@
 
   function pickRandom20() {
     const pool = QUESTIONS.slice();
-    // shuffle Fisher–Yates
     for (let i = pool.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [pool[i], pool[j]] = [pool[j], pool[i]];
@@ -263,7 +372,7 @@
     if (!randomSession) {
       randomSession = {
         questions: pickRandom20(),
-        answers: {}, // idx -> picked
+        answers: {},
         idx: 0,
         startedAt: Date.now(),
         durationMs: 20 * 60 * 1000,
@@ -271,7 +380,23 @@
       };
     }
 
-    let session = randomSession;
+    const session = randomSession;
+
+    function go(delta) {
+      const total = session.questions.length;
+      const next = session.idx + delta;
+      if (next < 0 || next >= total) return;
+      session.idx = next;
+      draw();
+    }
+    function finish() {
+      if (session.finished) return;
+      if (confirm("Шалгалтыг дуусгах уу? Үр дүн харагдана.")) {
+        session.finished = true;
+        session.endedAt = Date.now();
+        location.hash = "#/random/result";
+      }
+    }
 
     function draw() {
       if (session.finished) {
@@ -288,96 +413,72 @@
             <div class="title">Шалгалт</div>
             <div class="meta">Асуулт ${session.idx + 1} / ${total}</div>
           </div>
-          <div class="timer" id="timer">--:--</div>
+          <div class="timer" id="timer" aria-live="off">--:--</div>
         </div>
 
-        <div class="progress"><div class="progress-bar" style="width:${
-          ((session.idx + 1) / total) * 100
-        }%"></div></div>
+        <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(((session.idx + 1) / total) * 100)}">
+          <div class="progress-bar" style="width:${((session.idx + 1) / total) * 100}%"></div>
+        </div>
 
         <div class="q-card">
           <div class="q-meta">Карт #${pad2(q.card)} · Асуулт ${q.q}</div>
-          <img class="q-image" src="${q.img}" alt="Асуулт" loading="eager" />
-          <div class="choices" id="choices">
+          <img class="q-image zoomable" src="${q.img}" alt="Асуулт" loading="eager" />
+          <div class="choices" id="choices" role="radiogroup" aria-label="Хариултын сонголт">
             ${[1, 2, 3, 4, 5]
               .map(
                 (n) =>
-                  `<button class="choice-btn ${
-                    picked === n ? "selected" : ""
-                  }" data-ans="${n}" style="${
-                    picked === n
-                      ? "border-color:var(--primary);background:#eef4ff;color:var(--primary);"
-                      : ""
-                  }">${n}</button>`
+                  `<button class="choice-btn ${picked === n ? "selected" : ""}" data-ans="${n}" aria-label="Хариулт ${n}" aria-pressed="${picked === n}"><span class="kbd">${n}</span> ${n}</button>`
               )
               .join("")}
           </div>
         </div>
 
         <div class="actions">
-          <button class="btn" id="prevBtn" ${
-            session.idx === 0 ? "disabled" : ""
-          }>← Өмнөх</button>
+          <button class="btn" id="prevBtn" ${session.idx === 0 ? "disabled" : ""}>← Өмнөх <span class="kbd kbd-light">←</span></button>
           <div style="display:flex;gap:10px;flex-wrap:wrap">
             ${
               session.idx === total - 1
-                ? `<button class="btn primary" id="finishBtn">Шалгалт дуусгах</button>`
-                : `<button class="btn primary" id="nextBtn">Дараагийн →</button>`
+                ? `<button class="btn primary" id="finishBtn">Шалгалт дуусгах <span class="kbd kbd-light">Enter</span></button>`
+                : `<button class="btn primary" id="nextBtn">Дараагийн → <span class="kbd kbd-light">→</span></button>`
             }
           </div>
         </div>
 
-        <div class="cards-card-grid mt-24" id="qnav">
+        <p class="kbd-hint">Хариулах: <span class="kbd">1</span>–<span class="kbd">5</span> · Шилжих: <span class="kbd">←</span> <span class="kbd">→</span> · Дуусгах: <span class="kbd">Enter</span></p>
+
+        <div class="cards-card-grid mt-24" id="qnav" aria-label="Асуулт хооронд шилжих">
           ${session.questions
             .map((_, i) => {
               const ans = session.answers[i];
               const cur = i === session.idx;
-              return `<button class="btn" data-jump="${i}" style="padding:8px 0;${
+              return `<button class="btn" data-jump="${i}" aria-current="${cur}" style="padding:8px 0;${
                 cur
                   ? "background:var(--primary);color:#fff;border-color:var(--primary);"
                   : ans !== undefined
-                  ? "background:#eef4ff;border-color:#bfd1ff;color:var(--primary);"
-                  : ""
+                    ? "background:#eef4ff;border-color:#bfd1ff;color:var(--primary);"
+                    : ""
               }">${i + 1}</button>`;
             })
             .join("")}
         </div>
       `;
 
-      // wire up
       document.querySelectorAll("#choices .choice-btn").forEach((btn) => {
         btn.addEventListener("click", () => {
           session.answers[session.idx] = parseInt(btn.dataset.ans, 10);
           draw();
         });
       });
+
+      const imgEl = app.querySelector(".q-image.zoomable");
+      if (imgEl) imgEl.addEventListener("click", () => openLightbox(q.img, "Асуулт"));
+
       const prevBtn = document.getElementById("prevBtn");
       const nextBtn = document.getElementById("nextBtn");
       const finishBtn = document.getElementById("finishBtn");
-      if (prevBtn)
-        prevBtn.addEventListener("click", () => {
-          if (session.idx > 0) {
-            session.idx--;
-            draw();
-          }
-        });
-      if (nextBtn)
-        nextBtn.addEventListener("click", () => {
-          session.idx++;
-          draw();
-        });
-      if (finishBtn)
-        finishBtn.addEventListener("click", () => {
-          if (
-            confirm(
-              "Шалгалтыг дуусгах уу? Үр дүн харагдана."
-            )
-          ) {
-            session.finished = true;
-            session.endedAt = Date.now();
-            location.hash = "#/random/result";
-          }
-        });
+      if (prevBtn) prevBtn.addEventListener("click", () => go(-1));
+      if (nextBtn) nextBtn.addEventListener("click", () => go(1));
+      if (finishBtn) finishBtn.addEventListener("click", finish);
 
       document.querySelectorAll("[data-jump]").forEach((b) => {
         b.addEventListener("click", () => {
@@ -397,20 +498,39 @@
       const mins = Math.floor(remaining / 60000);
       const secs = Math.floor((remaining % 60000) / 1000);
       timerEl.textContent = `${pad2(mins)}:${pad2(secs)}`;
-      if (remaining < 60 * 1000) timerEl.classList.add("danger");
-      else if (remaining < 5 * 60 * 1000) timerEl.classList.add("warning");
+      timerEl.classList.toggle("danger", remaining < 60 * 1000);
+      timerEl.classList.toggle(
+        "warning",
+        remaining >= 60 * 1000 && remaining < 5 * 60 * 1000
+      );
 
       if (remaining <= 0) {
         session.finished = true;
         session.endedAt = Date.now();
         location.hash = "#/random/result";
-        return;
       }
     }
 
-    // tick timer
     if (session._tick) clearInterval(session._tick);
     session._tick = setInterval(updateTimer, 1000);
+
+    setKeyHandler((e) => {
+      if (e.key >= "1" && e.key <= "5") {
+        e.preventDefault();
+        session.answers[session.idx] = parseInt(e.key, 10);
+        draw();
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        go(-1);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        go(1);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        if (session.idx === session.questions.length - 1) finish();
+        else go(1);
+      }
+    });
 
     draw();
   }
@@ -473,8 +593,8 @@
         return `<div class="row">
           <span class="name">Карт #${pad2(c)}</span>
           <span class="stat">${s.right} зөв · ${s.wrong} буруу${
-          s.skipped ? " · " + s.skipped + " орхисон" : ""
-        }</span>
+            s.skipped ? " · " + s.skipped + " орхисон" : ""
+          }</span>
         </div>`;
       })
       .join("");
@@ -487,8 +607,8 @@
           picked === undefined
             ? `<span class="muted">Хариулаагүй</span>`
             : isCorrect
-            ? `<span style="color:var(--success);font-weight:600">✓ Зөв</span>`
-            : `<span style="color:var(--danger);font-weight:600">✗ Буруу. Таны хариулт: ${picked}</span>`;
+              ? `<span style="color:var(--success);font-weight:600">✓ Зөв</span>`
+              : `<span style="color:var(--danger);font-weight:600">✗ Буруу. Таны хариулт: ${picked}</span>`;
         return `
           <div class="q-card ${isCorrect ? "correct" : ""}" id="review-${i}">
             <div class="q-meta">
@@ -499,7 +619,7 @@
                   : ""
               }
             </div>
-            <img class="q-image" src="${q.img}" alt="Асуулт" loading="lazy" />
+            <img class="q-image zoomable" src="${q.img}" alt="Асуулт" loading="lazy" />
           </div>
         `;
       })
@@ -554,6 +674,10 @@
       randomSession = null;
       location.hash = "#/random";
     });
+
+    app.querySelectorAll(".q-image.zoomable").forEach((img) => {
+      img.addEventListener("click", () => openLightbox(img.src, img.alt));
+    });
   }
 
   function renderNotFound() {
@@ -564,6 +688,5 @@
     return String(n).padStart(2, "0");
   }
 
-  // initial render
   router();
 })();
