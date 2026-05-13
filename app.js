@@ -2,8 +2,22 @@
   "use strict";
 
   const QUESTIONS = window.JOLOONII_QUESTIONS || [];
+  const DESCRIPTIONS = window.JOLOONII_DESCRIPTIONS || {};
   const app = document.getElementById("app");
   const navLinks = document.querySelectorAll(".nav a");
+
+  function getDesc(card, q) {
+    const c = DESCRIPTIONS[card];
+    if (!c) return "";
+    return c[q] || "";
+  }
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
 
   const BY_CARD = {};
   QUESTIONS.forEach((q) => {
@@ -53,6 +67,162 @@
     const t = e.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
     keyHandler(e);
+  });
+
+  // ---- Confetti (two-side cannons) ----
+  const CONFETTI_COLORS = [
+    "#f59e0b", "#ef4444", "#ec4899", "#8b5cf6",
+    "#2563eb", "#06b6d4", "#16a34a", "#facc15",
+  ];
+  function launchConfetti(waves = 2) {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const canvas = document.createElement("canvas");
+    canvas.className = "confetti-canvas";
+    canvas.setAttribute("aria-hidden", "true");
+    document.body.appendChild(canvas);
+    const ctx = canvas.getContext("2d");
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    function resize() {
+      canvas.width = window.innerWidth * dpr;
+      canvas.height = window.innerHeight * dpr;
+      canvas.style.width = window.innerWidth + "px";
+      canvas.style.height = window.innerHeight + "px";
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    resize();
+    window.addEventListener("resize", resize);
+
+    const particles = [];
+    function burst(originX, angle) {
+      const count = 160;
+      const diag = Math.hypot(window.innerWidth, window.innerHeight);
+      const power = diag / 38;
+      for (let i = 0; i < count; i++) {
+        const spread = (Math.random() - 0.5) * 1.05;
+        const a = angle + spread;
+        const speed = power * (0.85 + Math.random() * 0.7);
+        particles.push({
+          x: originX,
+          y: window.innerHeight - 6,
+          vx: Math.cos(a) * speed,
+          vy: Math.sin(a) * speed,
+          size: 9 + Math.random() * 12,
+          color: CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)],
+          rotation: Math.random() * Math.PI * 2,
+          rotationSpeed: (Math.random() - 0.5) * 0.38,
+          gravity: 0.26 + Math.random() * 0.12,
+          drag: 0.994,
+          shape: Math.random() < 0.6 ? "rect" : "circle",
+          life: 0,
+        });
+      }
+    }
+    function fire() {
+      burst(-10, -Math.PI / 3.2);
+      burst(window.innerWidth + 10, -Math.PI + Math.PI / 3.2);
+    }
+    fire();
+    for (let w = 1; w < waves; w++) {
+      setTimeout(fire, 220 * w);
+    }
+
+    let raf;
+    function tick() {
+      ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.vx *= p.drag;
+        p.vy = p.vy * p.drag + p.gravity;
+        p.x += p.vx;
+        p.y += p.vy;
+        p.rotation += p.rotationSpeed;
+        p.life += 1;
+
+        let alpha = 1;
+        if (p.life > 140) alpha = Math.max(0, 1 - (p.life - 140) / 80);
+        if (p.y > window.innerHeight + 60 || alpha <= 0) {
+          particles.splice(i, 1);
+          continue;
+        }
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rotation);
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = p.color;
+        if (p.shape === "rect") {
+          ctx.fillRect(-p.size / 2, -p.size / 3, p.size, (p.size * 2) / 3);
+        } else {
+          ctx.beginPath();
+          ctx.arc(0, 0, p.size / 2.4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+      if (particles.length > 0) {
+        raf = requestAnimationFrame(tick);
+      } else {
+        cancelAnimationFrame(raf);
+        window.removeEventListener("resize", resize);
+        canvas.remove();
+      }
+    }
+    tick();
+  }
+
+  // ---- Celebration modal (perfect-score reveal) ----
+  let celebrateEl = null;
+  function closeCelebrate() {
+    if (!celebrateEl) return;
+    const node = celebrateEl;
+    celebrateEl = null;
+    node.style.animation = "celebrate-fade 0.2s ease-in reverse forwards";
+    const modal = node.querySelector(".celebrate-modal");
+    if (modal) modal.style.animation = "celebrate-pop 0.2s ease-in reverse forwards";
+    setTimeout(() => {
+      node.remove();
+      if (!lightboxEl) document.body.classList.remove("no-scroll");
+    }, 200);
+  }
+  function openCelebrate(score) {
+    if (celebrateEl) return;
+    const gif = score === 20 ? "3.gif" : score === 19 ? "2.gif" : "1.gif";
+    const title =
+      score === 20 ? "Төгс оноо!" : score === 19 ? "Гайхалтай!" : "Баяр хүргэе!";
+    const sub =
+      score === 20
+        ? "20/20 — бүх асуултад зөв хариуллаа."
+        : score === 19
+        ? "19/20 — маш сайн оноо."
+        : "18/20 — шалгалтад тэнцлээ.";
+    celebrateEl = document.createElement("div");
+    celebrateEl.className = "celebrate-backdrop";
+    celebrateEl.setAttribute("role", "dialog");
+    celebrateEl.setAttribute("aria-modal", "true");
+    celebrateEl.setAttribute("aria-label", title);
+    celebrateEl.innerHTML = `
+      <div class="celebrate-modal">
+        <button class="celebrate-close" aria-label="Хаах">×</button>
+        <div class="celebrate-score"><span class="num">${score}</span><span class="denom">/20</span></div>
+        <h2 class="celebrate-title">${title}</h2>
+        <p class="celebrate-sub">${sub}</p>
+        <div class="celebrate-gif-wrap"><img src="${gif}" alt="Баяр хүргэе" /></div>
+        <div class="celebrate-actions">
+          <button class="btn primary" data-celebrate-close>Үргэлжлүүлэх</button>
+        </div>
+      </div>
+    `;
+    celebrateEl.addEventListener("click", (e) => {
+      if (e.target === celebrateEl) closeCelebrate();
+    });
+    celebrateEl.querySelector(".celebrate-close").addEventListener("click", closeCelebrate);
+    celebrateEl.querySelector("[data-celebrate-close]").addEventListener("click", closeCelebrate);
+    document.body.appendChild(celebrateEl);
+    document.body.classList.add("no-scroll");
+    const waves = score === 20 ? 3 : score === 19 ? 2 : 2;
+    setTimeout(() => launchConfetti(waves), 180);
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && celebrateEl) closeCelebrate();
   });
 
   // ---- Image lightbox ----
@@ -197,6 +367,11 @@
         else if (a === picked) b.classList.add("wrong");
       });
 
+      const desc = getDesc(q.card, q.q);
+      const descBlock = desc
+        ? `<p class="fb-desc">${escapeHtml(desc)}</p>`
+        : "";
+
       feedbackEl.classList.add("show");
       if (correct) {
         correctCount++;
@@ -206,6 +381,7 @@
           <div class="fb-body">
             <p class="fb-title">Зөв байна!</p>
             <p class="fb-sub">Зөв хариулт: <strong>#${q.answer}</strong></p>
+            ${descBlock}
           </div>
         `;
       } else {
@@ -216,6 +392,7 @@
           <div class="fb-body">
             <p class="fb-title">Буруу хариулт</p>
             <p class="fb-sub">Таны сонголт: <strong>#${picked}</strong> · Зөв хариулт: <strong>#${q.answer}</strong></p>
+            ${descBlock}
           </div>
         `;
       }
@@ -266,20 +443,19 @@
           <img class="q-image zoomable" src="${q.img}" alt="Асуулт ${q.q}" loading="eager" />
           <div class="choices" id="choices" role="radiogroup" aria-label="Хариултын сонголт">
             ${[1, 2, 3, 4, 5]
-              .map(
-                (n) =>
-                  `<button class="choice-btn" data-ans="${n}" aria-label="Хариулт ${n}"><span class="kbd">${n}</span> ${n}</button>`
-              )
-              .join("")}
+          .map(
+            (n) =>
+              `<button class="choice-btn" data-ans="${n}" aria-label="Хариулт ${n}"><span class="kbd">${n}</span> ${n}</button>`
+          )
+          .join("")}
           </div>
           <div class="feedback" id="feedback" role="status" aria-live="polite"></div>
         </div>
 
         <div class="actions">
           <a class="btn" href="#/chapters">← Картууд</a>
-          <button class="btn primary" id="nextBtn" disabled>${
-            idx === total - 1 ? "Дуусгах" : "Дараагийн"
-          } <span class="kbd kbd-light">Enter</span></button>
+          <button class="btn primary" id="nextBtn" disabled>${idx === total - 1 ? "Дуусгах" : "Дараагийн"
+        } <span class="kbd kbd-light">Enter</span></button>
         </div>
 
         <p class="kbd-hint">Хариултаа сонгохдоо <span class="kbd">1</span>–<span class="kbd">5</span>, дараагийн руу шилжихдээ <span class="kbd">Enter</span>.</p>
@@ -320,6 +496,7 @@
     const passed = correct >= 18;
     app.innerHTML = `
       <div class="result-card">
+        ${passed ? `<div class="result-pass-emoji" aria-hidden="true">🌟</div>` : ""}
         <div class="muted">Карт #${pad2(cardNum)} дууслаа</div>
         <div class="result-score">
           <span class="${passed ? "pass" : "fail"}">${correct}</span>
@@ -327,18 +504,29 @@
         </div>
         <div class="result-pct">${pct}% зөв хариулсан</div>
         <div class="result-msg ${passed ? "pass" : "fail"}">
-          ${
-            passed
-              ? "Сайн байна. Энэ картыг бараг бүрэн эзэмшсэн байна."
-              : "Дахин үзэх хэрэгтэй. Алдсан асуултуудаа давтаарай."
-          }
+          ${passed
+        ? "Сайн байна. Энэ картыг бараг бүрэн эзэмшсэн байна."
+        : "Дахин үзэх хэрэгтэй. Алдсан асуултуудаа давтаарай."
+      }
         </div>
         <div class="actions" style="justify-content:center;margin-top:24px">
-          <a class="btn" href="#/chapter/${cardNum}">Дахин эхлэх</a>
+          <button class="btn" id="restartChapterBtn" type="button">Дахин эхлэх</button>
           <a class="btn primary" href="#/chapters">Картууд руу буцах</a>
         </div>
       </div>
     `;
+
+    const restartBtn = document.getElementById("restartChapterBtn");
+    if (restartBtn) {
+      restartBtn.addEventListener("click", () => {
+        closeCelebrate();
+        renderChapter(cardNum);
+      });
+    }
+
+    if (correct >= 18) {
+      setTimeout(() => openCelebrate(correct), 350);
+    }
   }
 
   // ---- RANDOM (mode 2) ----
@@ -425,22 +613,21 @@
           <img class="q-image zoomable" src="${q.img}" alt="Асуулт" loading="eager" />
           <div class="choices" id="choices" role="radiogroup" aria-label="Хариултын сонголт">
             ${[1, 2, 3, 4, 5]
-              .map(
-                (n) =>
-                  `<button class="choice-btn ${picked === n ? "selected" : ""}" data-ans="${n}" aria-label="Хариулт ${n}" aria-pressed="${picked === n}"><span class="kbd">${n}</span> ${n}</button>`
-              )
-              .join("")}
+          .map(
+            (n) =>
+              `<button class="choice-btn ${picked === n ? "selected" : ""}" data-ans="${n}" aria-label="Хариулт ${n}" aria-pressed="${picked === n}"><span class="kbd">${n}</span> ${n}</button>`
+          )
+          .join("")}
           </div>
         </div>
 
         <div class="actions">
           <button class="btn" id="prevBtn" ${session.idx === 0 ? "disabled" : ""}>← Өмнөх <span class="kbd kbd-light">←</span></button>
           <div style="display:flex;gap:10px;flex-wrap:wrap">
-            ${
-              session.idx === total - 1
-                ? `<button class="btn primary" id="finishBtn">Шалгалт дуусгах <span class="kbd kbd-light">Enter</span></button>`
-                : `<button class="btn primary" id="nextBtn">Дараагийн → <span class="kbd kbd-light">→</span></button>`
-            }
+            ${session.idx === total - 1
+          ? `<button class="btn primary" id="finishBtn">Шалгалт дуусгах <span class="kbd kbd-light">Enter</span></button>`
+          : `<button class="btn primary" id="nextBtn">Дараагийн → <span class="kbd kbd-light">→</span></button>`
+        }
           </div>
         </div>
 
@@ -448,18 +635,17 @@
 
         <div class="cards-card-grid mt-24" id="qnav" aria-label="Асуулт хооронд шилжих">
           ${session.questions
-            .map((_, i) => {
-              const ans = session.answers[i];
-              const cur = i === session.idx;
-              return `<button class="btn" data-jump="${i}" aria-current="${cur}" style="padding:8px 0;${
-                cur
-                  ? "background:var(--primary);color:#fff;border-color:var(--primary);"
-                  : ans !== undefined
-                    ? "background:#eef4ff;border-color:#bfd1ff;color:var(--primary);"
-                    : ""
+          .map((_, i) => {
+            const ans = session.answers[i];
+            const cur = i === session.idx;
+            return `<button class="btn" data-jump="${i}" aria-current="${cur}" style="padding:8px 0;${cur
+                ? "background:var(--primary);color:#fff;border-color:var(--primary);"
+                : ans !== undefined
+                  ? "background:#eef4ff;border-color:#bfd1ff;color:var(--primary);"
+                  : ""
               }">${i + 1}</button>`;
-            })
-            .join("")}
+          })
+          .join("")}
         </div>
       `;
 
@@ -592,8 +778,7 @@
         const s = cardStats[c];
         return `<div class="row">
           <span class="name">Карт #${pad2(c)}</span>
-          <span class="stat">${s.right} зөв · ${s.wrong} буруу${
-            s.skipped ? " · " + s.skipped + " орхисон" : ""
+          <span class="stat">${s.right} зөв · ${s.wrong} буруу${s.skipped ? " · " + s.skipped + " орхисон" : ""
           }</span>
         </div>`;
       })
@@ -609,17 +794,21 @@
             : isCorrect
               ? `<span style="color:var(--success);font-weight:600">✓ Зөв</span>`
               : `<span style="color:var(--danger);font-weight:600">✗ Буруу. Таны хариулт: ${picked}</span>`;
+        const desc = getDesc(q.card, q.q);
+        const descBlock = desc
+          ? `<p class="review-desc">${escapeHtml(desc)}</p>`
+          : "";
         return `
           <div class="q-card ${isCorrect ? "correct" : ""}" id="review-${i}">
             <div class="q-meta">
               ${i + 1}. Карт #${pad2(q.card)} · Асуулт ${q.q} — ${status}
-              ${
-                !isCorrect
-                  ? ` · <span style="color:var(--success)">Зөв хариу: ${q.answer}</span>`
-                  : ""
-              }
+              ${!isCorrect
+            ? ` · <span style="color:var(--success)">Зөв хариу: ${q.answer}</span>`
+            : ""
+          }
             </div>
             <img class="q-image zoomable" src="${q.img}" alt="Асуулт" loading="lazy" />
+            ${descBlock}
           </div>
         `;
       })
@@ -634,22 +823,20 @@
         </div>
         <div class="result-pct">${pct}% · хугацаа: ${pad2(minsUsed)}:${pad2(secsUsed)}</div>
         <div class="result-msg ${passed ? "pass" : "fail"}">
-          ${
-            passed
-              ? "Баяр хүргэе. Та шалгалтыг тэнцэхүйц зөв хийсэн байна (≥18/20)."
-              : "Тэнцээгүй байна. Жолооны шалгалтад тэнцэхэд 20-оос дор хаяж 18 нь зөв байх ёстой."
-          }
+          ${passed
+        ? "Баяр хүргэе. Та шалгалтыг тэнцэхүйц зөв хийсэн байна (≥18/20)."
+        : "Тэнцээгүй байна. Жолооны шалгалтад тэнцэхэд 20-оос дор хаяж 18 нь зөв байх ёстой."
+      }
         </div>
 
         <div class="cards-breakdown">
           <h3>Тойм</h3>
           <div class="row"><span class="name">Зөв</span><span class="stat" style="color:var(--success)">${correct}</span></div>
           <div class="row"><span class="name">Буруу</span><span class="stat" style="color:var(--danger)">${wrong}</span></div>
-          ${
-            skipped
-              ? `<div class="row"><span class="name">Орхисон</span><span class="stat">${skipped}</span></div>`
-              : ""
-          }
+          ${skipped
+        ? `<div class="row"><span class="name">Орхисон</span><span class="stat">${skipped}</span></div>`
+        : ""
+      }
         </div>
 
         <div class="cards-breakdown">
@@ -678,6 +865,11 @@
     app.querySelectorAll(".q-image.zoomable").forEach((img) => {
       img.addEventListener("click", () => openLightbox(img.src, img.alt));
     });
+
+    if (correct >= 18 && !session.celebrateShown) {
+      session.celebrateShown = true;
+      setTimeout(() => openCelebrate(correct), 350);
+    }
   }
 
   function renderNotFound() {
